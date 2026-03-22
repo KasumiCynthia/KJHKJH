@@ -1,0 +1,5 @@
+{
+  "name": "ComfyUI Auto-Upscaler",
+  "description": "Automatically upscales images appearing in a watched folder using ComfyUI.",
+  "requestFramePermissions": []
+}
