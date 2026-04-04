@@ -164,6 +164,20 @@ app.get("/api/status", (req, res) => {
   });
 });
 
+app.get("/api/discover", async (req, res) => {
+  // Simple discovery: check common local IPs
+  const potentialIps = ['127.0.0.1', '192.168.1.1', '192.168.1.100'];
+  for (const ip of potentialIps) {
+    try {
+      await axios.get(`http://${ip}:8188/system_stats`, { timeout: 500 });
+      return res.json({ success: true, url: `http://${ip}:8188` });
+    } catch (e) {
+      continue;
+    }
+  }
+  res.status(404).json({ success: false, error: "No ComfyUI instance found" });
+});
+
 app.get("/api/test-connection", async (req, res) => {
   try {
     const response = await axios.get(`${COMFYUI_URL}/system_stats`, { timeout: 3000 });
