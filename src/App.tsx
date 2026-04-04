@@ -16,6 +16,7 @@ interface Status {
   watchFolder: string;
   sendFolder: string;
   outputFolder: string;
+  isTeamModeEnabled: boolean;
   logs: LogEntry[];
   isConnected: boolean;
 }
@@ -49,6 +50,7 @@ export default function App() {
       if (!folderInput) setFolderInput(data.watchFolder);
       if (!sendFolderInput) setSendFolderInput(data.sendFolder);
       if (!outputFolderInput) setOutputFolderInput(data.outputFolder);
+      setIsTeamModeEnabled(data.isTeamModeEnabled);
     } catch (err) {
       console.error('Failed to fetch status', err);
     } finally {
@@ -96,7 +98,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const updateSettings = async (newSettings: { scale?: number; watching?: boolean; comfyUrl?: string; watchFolder?: string; sendFolder?: string; outputFolder?: string }) => {
+  const updateSettings = async (newSettings: { scale?: number; watching?: boolean; comfyUrl?: string; watchFolder?: string; sendFolder?: string; outputFolder?: string; isTeamModeEnabled?: boolean }) => {
     try {
       const res = await fetch('/api/settings', {
         method: 'POST',
@@ -308,7 +310,11 @@ export default function App() {
                       <div className="flex items-center gap-2">
                         <span className="text-[10px] font-medium text-neutral-500 uppercase">Team Mode</span>
                         <button 
-                          onClick={() => setIsTeamModeEnabled(!isTeamModeEnabled)}
+                          onClick={() => {
+                            const newValue = !isTeamModeEnabled;
+                            setIsTeamModeEnabled(newValue);
+                            updateSettings({ isTeamModeEnabled: newValue });
+                          }}
                           className={`w-8 h-4 rounded-full transition-colors relative ${isTeamModeEnabled ? 'bg-red-500' : 'bg-neutral-800'}`}
                         >
                           <motion.div 
