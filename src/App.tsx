@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Folder, Play, Square, Image as ImageIcon, CheckCircle2, AlertCircle, Clock, Globe, FolderOpen, Wifi, Settings, X, ArrowRight, LayoutGrid } from 'lucide-react';
+import { Folder, Play, Square, Image as ImageIcon, CheckCircle2, AlertCircle, Clock, Globe, FolderOpen, Wifi, Settings, X, ArrowRight, LayoutGrid, Bot } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 
 interface LogEntry {
@@ -30,17 +30,29 @@ export default function App() {
   const [outputFoldersInput, setOutputFoldersInput] = useState<{ id: string, path: string, sources: boolean[] }[]>([]);
   const [testingConnection, setTestingConnection] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [isLmSettingsOpen, setIsLmSettingsOpen] = useState(false);
   const [settingsPanelStep, setSettingsPanelStep] = useState(0);
   const [isTeamPanelOpen, setIsTeamPanelOpen] = useState(false);
   const [isTeamModeEnabled, setIsTeamModeEnabled] = useState(false);
+
+  const [lmUrlInput, setLmUrlInput] = useState('http://127.0.0.1:1234');
+  const [lmModelInput, setLmModelInput] = useState('');
+  const [availableModels, setAvailableModels] = useState<any[]>([]);
+  const [isAiRunning, setIsAiRunning] = useState(false);
+  const processedFilesRef = useRef<Record<string, number>>({});
+
   const watchFolderRef = useRef<HTMLInputElement>(null);
   const globalFolderRef = useRef<HTMLInputElement>(null);
   const [pickerState, setPickerState] = useState<{type: 'send'|'output'|'watch', index?: number} | null>(null);
 
   const isSettingsOpenRef = useRef(isSettingsOpen);
+  const isLmSettingsOpenRef = useRef(isLmSettingsOpen);
   useEffect(() => {
     isSettingsOpenRef.current = isSettingsOpen;
   }, [isSettingsOpen]);
+  useEffect(() => {
+    isLmSettingsOpenRef.current = isLmSettingsOpen;
+  }, [isLmSettingsOpen]);
 
   const fetchStatus = async () => {
     try {
@@ -49,7 +61,7 @@ export default function App() {
       setStatus(data);
       
       // Only update inputs if settings are NOT open to prevent overwriting user changes
-      if (!isSettingsOpenRef.current) {
+      if (!isSettingsOpenRef.current && !isLmSettingsOpenRef.current) {
         if (!hostInput) setHostInput(data.comfyUrl);
         if (!folderInput) setFolderInput(data.watchFolder);
         if (data.sendFolders && data.sendFolders.length > 0) {
@@ -58,6 +70,8 @@ export default function App() {
         }
         if (data.outputFolders) setOutputFoldersInput(data.outputFolders);
         setIsTeamModeEnabled(data.isTeamModeEnabled);
+        if (data.lmUrl) setLmUrlInput(data.lmUrl);
+        if (data.lmModel) setLmModelInput(data.lmModel);
       }
     } catch (err) {
       console.error('Failed to fetch status', err);
@@ -111,7 +125,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const updateSettings = async (newSettings: { scale?: number; watching?: boolean; comfyUrl?: string; watchFolder?: string; sendFolders?: { path: string, filter: string }[]; outputFolders?: any[]; isTeamModeEnabled?: boolean }) => {
+  const updateSettings = async (newSettings: { scale?: number; watching?: boolean; comfyUrl?: string; watchFolder?: string; sendFolders?: { path: string, filter: string }[]; outputFolders?: any[]; isTeamModeEnabled?: boolean; lmUrl?: string; lmModel?: string }) => {
     try {
       const res = await fetch('/api/settings', {
         method: 'POST',
@@ -126,6 +140,108 @@ export default function App() {
       console.error('Failed to update settings', err);
     }
   };
+
+  const fetchLmModels = async () => {
+    try {
+      const url = lmUrlInput.replace(/\/$/, '');
+      const res = await fetch(`${url}/v1/models`);
+      const data = await res.json();
+      if (data.data) {
+        setAvailableModels(data.data);
+        if (data.data.length > 0 && !lmModelInput) {
+          setLmModelInput(data.data[0].id);
+        }
+      } else {
+        alert(`Failed to fetch models.`);
+      }
+    } catch (err: any) {
+      alert(`Error fetching models: ${err.message}. Make sure LM Studio is running and CORS is enabled.`);
+    }
+  };
+
+  const runAiProcessing = async () => {
+    if (!lmUrlInput || !lmModelInput) {
+      alert("Please configure LM Studio URL and Model first.");
+      setIsAiRunning(false);
+      return;
+    }
+
+    try {
+      const prepRes = await fetch('/api/run-ai-prepare');
+      const prepData = await prepRes.json();
+      
+      if (!prepData.success || !prepData.jobs || prepData.jobs.length === 0) {
+        return;
+      }
+
+      const url = lmUrlInput.replace(/\/$/, '');
+      const systemPrompt = "Check each folder set by the user for the contents inside. If the user set only one file to focus on, only focus on the name of the file that the user set. The AI will read the contents of the file (if it's a .txt or other reable document) and generate the exact contents of that file.";
+
+      let processedAny = false;
+
+      for (const job of prepData.jobs) {
+        const fileKey = `${job.sourceIndex}-${job.fileName}`;
+        if (processedFilesRef.current[fileKey] === job.mtimeMs) {
+          continue; // Skip already processed file
+        }
+
+        processedAny = true;
+        await fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: `Sending ${job.fileName} to AI (${lmModelInput})...`, type: "info" }) });
+        
+        try {
+          const aiRes = await fetch(`${url}/v1/chat/completions`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              model: lmModelInput,
+              messages: [
+                { role: "system", content: systemPrompt },
+                { role: "user", content: `File Name: ${job.fileName}\nFile Date/Time: ${job.mtime}\n\nFile Content:\n${job.content}` }
+              ],
+              temperature: 0.7
+            })
+          });
+
+          if (!aiRes.ok) throw new Error(`LM Studio returned ${aiRes.status}`);
+          const aiData = await aiRes.json();
+          const aiOutput = aiData.choices[0].message.content;
+
+          await fetch('/api/save-ai-output', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileName: job.fileName,
+              content: aiOutput,
+              targets: job.targets
+            })
+          });
+
+          // Mark as processed
+          processedFilesRef.current[fileKey] = job.mtimeMs;
+
+        } catch (err: any) {
+          await fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: `AI Error on ${job.fileName}: ${err.message}`, type: "error" }) });
+        }
+      }
+      
+      if (processedAny) {
+        await fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: "AI Processing Run Complete.", type: "success" }) });
+      }
+
+    } catch (err: any) {
+      console.error(`Error starting AI run: ${err.message}`);
+    }
+  };
+
+  useEffect(() => {
+    let interval: any;
+    if (isAiRunning) {
+      runAiProcessing(); // Run immediately
+      interval = setInterval(runAiProcessing, 10000); // Then every 10s
+    }
+    return () => clearInterval(interval);
+  }, [isAiRunning, lmUrlInput, lmModelInput]);
+
 
   const handleGlobalFolderSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0 && pickerState) {
@@ -168,7 +284,58 @@ export default function App() {
             </h1>
           </div>
           
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-4 relative">
+            <button 
+              onClick={() => setIsLmSettingsOpen(!isLmSettingsOpen)}
+              className={`p-2 rounded transition-colors ${isLmSettingsOpen ? 'bg-neutral-800 text-white' : 'text-neutral-500 hover:text-neutral-300'}`}
+              title="LM Instance Settings"
+            >
+              <Bot size={20} />
+            </button>
+            {isLmSettingsOpen && (
+              <div className="absolute top-12 right-12 w-80 bg-neutral-950 border border-neutral-800 rounded-lg shadow-2xl p-4 z-50">
+                <h3 className="text-xs font-bold text-neutral-500 uppercase mb-4">LM Instance Settings</h3>
+                <div className="space-y-4">
+                  <div>
+                    <label className="text-[10px] text-neutral-400 uppercase mb-1 block">LM Instance URL</label>
+                    <div className="flex gap-2">
+                      <input 
+                        type="text" 
+                        value={lmUrlInput} 
+                        onChange={e => setLmUrlInput(e.target.value)}
+                        className="bg-neutral-900 border border-neutral-800 rounded px-2 py-1.5 text-xs w-full text-neutral-300 outline-none focus:border-neutral-600"
+                        placeholder="http://127.0.0.1:1234"
+                      />
+                      <button onClick={fetchLmModels} className="bg-neutral-800 hover:bg-neutral-700 px-3 rounded text-xs text-neutral-300 transition-colors font-bold">
+                        Connect
+                      </button>
+                    </div>
+                  </div>
+                  <div>
+                    <label className="text-[10px] text-neutral-400 uppercase mb-1 block">Model</label>
+                    <select 
+                      value={lmModelInput} 
+                      onChange={e => setLmModelInput(e.target.value)}
+                      className="bg-neutral-900 border border-neutral-800 rounded px-2 py-1.5 text-xs w-full text-neutral-300 outline-none focus:border-neutral-600"
+                    >
+                      <option value="">Select a model...</option>
+                      {availableModels.map(m => (
+                        <option key={m.id} value={m.id}>{m.id}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="flex justify-end pt-2">
+                    <button 
+                      onClick={() => { updateSettings({ lmUrl: lmUrlInput, lmModel: lmModelInput }); setIsLmSettingsOpen(false); }}
+                      className="bg-red-500 hover:bg-red-600 text-white text-xs font-bold uppercase tracking-widest py-2 px-6 rounded transition-colors"
+                    >
+                      Save
+                    </button>
+                  </div>
+                </div>
+              </div>
+            )}
+
             <button 
               onClick={() => setIsSettingsOpen(true)}
               className="text-neutral-400 hover:text-white transition-colors bg-neutral-900 border border-neutral-800 p-2 rounded-md hover:border-neutral-600"
@@ -490,26 +657,49 @@ export default function App() {
                 </div>
               </div>
 
-              <button
-                onClick={() => updateSettings({ watching: !status.isWatching })}
-                className={`w-full py-4 rounded-lg flex items-center justify-center gap-3 font-medium uppercase tracking-wider transition-all border ${
-                  status.isWatching 
-                    ? 'bg-red-500/10 border-red-500/50 text-red-400 hover:bg-red-500/20' 
-                    : 'bg-neutral-100 border-neutral-100 text-neutral-900 hover:bg-white'
-                }`}
-              >
-                {status.isWatching ? (
-                  <>
-                    <Square size={18} fill="currentColor" />
-                    PAUSE
-                  </>
-                ) : (
-                  <>
-                    <Play size={18} fill="currentColor" />
-                    Start Auto
-                  </>
-                )}
-              </button>
+              <div className="flex gap-4">
+                <button
+                  onClick={() => setIsAiRunning(!isAiRunning)}
+                  className={`w-full py-4 rounded-lg flex items-center justify-center gap-3 font-medium uppercase tracking-wider transition-all border ${
+                    isAiRunning 
+                      ? 'bg-green-500/10 border-green-500/50 text-green-400 hover:bg-green-500/20' 
+                      : 'bg-green-600 border-green-600 text-white hover:bg-green-500'
+                  }`}
+                >
+                  {isAiRunning ? (
+                    <>
+                      <Square size={18} fill="currentColor" />
+                      STOP AI
+                    </>
+                  ) : (
+                    <>
+                      <Play size={18} fill="currentColor" />
+                      RUN AI
+                    </>
+                  )}
+                </button>
+
+                <button
+                  onClick={() => updateSettings({ watching: !status.isWatching })}
+                  className={`w-full py-4 rounded-lg flex items-center justify-center gap-3 font-medium uppercase tracking-wider transition-all border ${
+                    status.isWatching 
+                      ? 'bg-red-500/10 border-red-500/50 text-red-400 hover:bg-red-500/20' 
+                      : 'bg-neutral-100 border-neutral-100 text-neutral-900 hover:bg-white'
+                  }`}
+                >
+                  {status.isWatching ? (
+                    <>
+                      <Square size={18} fill="currentColor" />
+                      PAUSE
+                    </>
+                  ) : (
+                    <>
+                      <Play size={18} fill="currentColor" />
+                      Start Auto
+                    </>
+                  )}
+                </button>
+              </div>
             </div>
           </div>
 
