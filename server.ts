@@ -18,13 +18,11 @@ app.use(express.json());
 
 let COMFYUI_URL = process.env.COMFYUI_URL || "http://localhost:8188";
 let WATCH_FOLDER = path.resolve(process.env.WATCH_FOLDER || "./input_images");
-let SEND_FOLDER = path.resolve(process.env.SEND_FOLDER || "./send_folder");
-let OUTPUT_FOLDER = path.resolve(process.env.OUTPUT_FOLDER || "./output_folder");
+let SEND_FOLDERS: { path: string, filter: string }[] = Array.from({ length: 10 }, () => ({ path: "", filter: "" }));
+let OUTPUT_FOLDERS: { id: string, path: string, sources: boolean[] }[] = [];
 
 // Ensure initial folders exist
 if (!fs.existsSync(WATCH_FOLDER)) fs.mkdirSync(WATCH_FOLDER, { recursive: true });
-if (!fs.existsSync(SEND_FOLDER)) fs.mkdirSync(SEND_FOLDER, { recursive: true });
-if (!fs.existsSync(OUTPUT_FOLDER)) fs.mkdirSync(OUTPUT_FOLDER, { recursive: true });
 
 let currentScale = 2.0;
 let isWatching = false;
@@ -173,8 +171,8 @@ app.get("/api/status", async (req, res) => {
     currentScale,
     comfyUrl: COMFYUI_URL,
     watchFolder: WATCH_FOLDER,
-    sendFolder: SEND_FOLDER,
-    outputFolder: OUTPUT_FOLDER,
+    sendFolders: SEND_FOLDERS,
+    outputFolders: OUTPUT_FOLDERS,
     isTeamModeEnabled,
     logs,
     isConnected
@@ -205,7 +203,7 @@ app.get("/api/test-connection", async (req, res) => {
 });
 
 app.post("/api/settings", (req, res) => {
-  const { scale, watching, comfyUrl, watchFolder, sendFolder, outputFolder, isTeamModeEnabled: teamMode } = req.body;
+  const { scale, watching, comfyUrl, watchFolder, sendFolders, outputFolders, isTeamModeEnabled: teamMode } = req.body;
   
   if (scale !== undefined) currentScale = scale;
   if (comfyUrl !== undefined) COMFYUI_URL = comfyUrl;
@@ -219,14 +217,24 @@ app.post("/api/settings", (req, res) => {
     }
   }
 
-  if (sendFolder !== undefined) {
-    SEND_FOLDER = path.resolve(sendFolder);
-    if (!fs.existsSync(SEND_FOLDER)) fs.mkdirSync(SEND_FOLDER, { recursive: true });
+  if (sendFolders !== undefined) {
+    SEND_FOLDERS = sendFolders;
+    SEND_FOLDERS.forEach(f => {
+      if (f && f.path) {
+        const p = path.resolve(f.path);
+        if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
+      }
+    });
   }
 
-  if (outputFolder !== undefined) {
-    OUTPUT_FOLDER = path.resolve(outputFolder);
-    if (!fs.existsSync(OUTPUT_FOLDER)) fs.mkdirSync(OUTPUT_FOLDER, { recursive: true });
+  if (outputFolders !== undefined) {
+    OUTPUT_FOLDERS = outputFolders;
+    OUTPUT_FOLDERS.forEach(out => {
+      if (out.path) {
+        const p = path.resolve(out.path);
+        if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
+      }
+    });
   }
   
   if (watching === true && !isWatching) {
@@ -241,8 +249,8 @@ app.post("/api/settings", (req, res) => {
     isWatching, 
     comfyUrl: COMFYUI_URL,
     watchFolder: WATCH_FOLDER,
-    sendFolder: SEND_FOLDER,
-    outputFolder: OUTPUT_FOLDER,
+    sendFolders: SEND_FOLDERS,
+    outputFolders: OUTPUT_FOLDERS,
     isTeamModeEnabled
   });
 });

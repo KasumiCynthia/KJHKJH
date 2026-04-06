@@ -14,8 +14,8 @@ interface Status {
   currentScale: number;
   comfyUrl: string;
   watchFolder: string;
-  sendFolder: string;
-  outputFolder: string;
+  sendFolders: { path: string, filter: string }[];
+  outputFolders: { id: string, path: string, sources: boolean[] }[];
   isTeamModeEnabled: boolean;
   logs: LogEntry[];
   isConnected: boolean;
@@ -26,20 +26,16 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [hostInput, setHostInput] = useState('');
   const [folderInput, setFolderInput] = useState('');
-  const [sendFolderInput, setSendFolderInput] = useState('');
-  const [outputFolderInput, setOutputFolderInput] = useState('');
+  const [sendFoldersInput, setSendFoldersInput] = useState<{ path: string, filter: string }[]>(Array.from({ length: 10 }, () => ({ path: '', filter: '' })));
+  const [outputFoldersInput, setOutputFoldersInput] = useState<{ id: string, path: string, sources: boolean[] }[]>([]);
   const [testingConnection, setTestingConnection] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [settingsPanelStep, setSettingsPanelStep] = useState(0);
   const [isTeamPanelOpen, setIsTeamPanelOpen] = useState(false);
   const [isTeamModeEnabled, setIsTeamModeEnabled] = useState(false);
   const watchFolderRef = useRef<HTMLInputElement>(null);
-  const sendFolderRef = useRef<HTMLInputElement>(null);
-  const outputFolderRef = useRef<HTMLInputElement>(null);
-
-  const handleFolderSelect = (ref: React.RefObject<HTMLInputElement>, setter: (val: string) => void, key: string) => {
-    ref.current?.click();
-  };
+  const globalFolderRef = useRef<HTMLInputElement>(null);
+  const [pickerState, setPickerState] = useState<{type: 'send'|'output'|'watch', index?: number} | null>(null);
 
   const fetchStatus = async () => {
     try {
@@ -48,8 +44,11 @@ export default function App() {
       setStatus(data);
       if (!hostInput) setHostInput(data.comfyUrl);
       if (!folderInput) setFolderInput(data.watchFolder);
-      if (!sendFolderInput) setSendFolderInput(data.sendFolder);
-      if (!outputFolderInput) setOutputFolderInput(data.outputFolder);
+      if (data.sendFolders && data.sendFolders.length > 0) {
+        const formatted = data.sendFolders.map((f: any) => typeof f === 'string' ? { path: f, filter: '' } : f);
+        setSendFoldersInput(formatted);
+      }
+      if (data.outputFolders) setOutputFoldersInput(data.outputFolders);
       setIsTeamModeEnabled(data.isTeamModeEnabled);
     } catch (err) {
       console.error('Failed to fetch status', err);
@@ -98,7 +97,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const updateSettings = async (newSettings: { scale?: number; watching?: boolean; comfyUrl?: string; watchFolder?: string; sendFolder?: string; outputFolder?: string; isTeamModeEnabled?: boolean }) => {
+  const updateSettings = async (newSettings: { scale?: number; watching?: boolean; comfyUrl?: string; watchFolder?: string; sendFolders?: { path: string, filter: string }[]; outputFolders?: any[]; isTeamModeEnabled?: boolean }) => {
     try {
       const res = await fetch('/api/settings', {
         method: 'POST',
@@ -112,6 +111,25 @@ export default function App() {
     } catch (err) {
       console.error('Failed to update settings', err);
     }
+  };
+
+  const handleGlobalFolderSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files.length > 0 && pickerState) {
+      const path = e.target.files[0].webkitRelativePath.split('/')[0];
+      if (pickerState.type === 'watch') {
+        setFolderInput(path);
+        updateSettings({ watchFolder: path });
+      } else if (pickerState.type === 'send' && pickerState.index !== undefined) {
+        const newFolders = [...sendFoldersInput];
+        newFolders[pickerState.index].path = path;
+        setSendFoldersInput(newFolders);
+      } else if (pickerState.type === 'output' && pickerState.index !== undefined) {
+        const newOutputs = [...outputFoldersInput];
+        newOutputs[pickerState.index].path = path;
+        setOutputFoldersInput(newOutputs);
+      }
+    }
+    if (globalFolderRef.current) globalFolderRef.current.value = '';
   };
 
   if (loading || !status) {
@@ -183,6 +201,7 @@ export default function App() {
                 </div>
 
                 <div className="space-y-6">
+                  <input type="file" ref={globalFolderRef} className="hidden" webkitdirectory="" directory="" onChange={handleGlobalFolderSelect} />
                   <div className="bg-neutral-950 rounded-lg p-4 border border-neutral-800">
                     <label className="text-xs font-medium text-neutral-500 uppercase mb-3 block">COMFYUI HOST</label>
                     <div className="flex items-center gap-3">
@@ -208,7 +227,7 @@ export default function App() {
                     <div className="bg-neutral-950 rounded-lg p-4 border border-neutral-800">
                       <label className="text-xs font-medium text-neutral-500 uppercase mb-3 block">WATCH FOLDER</label>
                       <div className="flex items-center gap-3">
-                        <button onClick={() => watchFolderRef.current?.click()} className="text-neutral-500 hover:text-neutral-300">
+                        <button onClick={() => { setPickerState({type: 'watch'}); globalFolderRef.current?.click(); }} className="text-neutral-500 hover:text-neutral-300">
                           <FolderOpen size={16} />
                         </button>
                         <input 
@@ -219,45 +238,62 @@ export default function App() {
                           className="bg-transparent border-none focus:ring-0 text-sm w-full text-neutral-300 placeholder-neutral-700 outline-none"
                           placeholder="./input_images"
                         />
-                        <input type="file" ref={watchFolderRef} className="hidden" webkitdirectory="" directory="" onChange={(e) => {
-                          if (e.target.files && e.target.files.length > 0) {
-                            const path = e.target.files[0].webkitRelativePath.split('/')[0];
-                            setFolderInput(path);
-                            updateSettings({ watchFolder: path });
-                          }
-                        }} />
                       </div>
                     </div>
                   )}
                   {settingsPanelStep === 1 && (
-                    <div className="bg-neutral-950 rounded-lg p-4 border border-neutral-800">
-                      <label className="text-xs font-medium text-neutral-500 uppercase mb-3 block">SEND FOLDER</label>
-                      <div className="flex items-center gap-3">
-                        <button onClick={() => sendFolderRef.current?.click()} className="text-neutral-500 hover:text-neutral-300">
-                          <FolderOpen size={16} />
+                    <div className="bg-neutral-950 rounded-lg p-4 border border-neutral-800 flex flex-col h-full">
+                      <label className="text-xs font-medium text-neutral-500 uppercase mb-3 block">WORK TO GRAB (10 SLOTS)</label>
+                      <div className="space-y-2 max-h-[300px] overflow-y-auto custom-scrollbar pr-2 flex-1">
+                        {sendFoldersInput.map((folder, index) => (
+                          <div key={index} className="flex flex-col gap-2 bg-neutral-900 p-3 rounded border border-neutral-800">
+                            <div className="flex items-center gap-3">
+                              <span className="text-[10px] font-bold text-neutral-500 w-4 text-center">{index + 1}</span>
+                              <button onClick={() => { setPickerState({type: 'send', index}); globalFolderRef.current?.click(); }} className="text-neutral-500 hover:text-neutral-300">
+                                <FolderOpen size={14} />
+                              </button>
+                              <input
+                                type="text"
+                                value={folder.path}
+                                onChange={(e) => {
+                                  const newFolders = [...sendFoldersInput];
+                                  newFolders[index].path = e.target.value;
+                                  setSendFoldersInput(newFolders);
+                                }}
+                                className="bg-transparent border-none focus:ring-0 text-xs w-full text-neutral-300 placeholder-neutral-700 outline-none"
+                                placeholder={`Folder ${index + 1} path`}
+                              />
+                            </div>
+                            <div className="flex items-center gap-3 pl-8">
+                              <input
+                                type="text"
+                                value={folder.filter}
+                                onChange={(e) => {
+                                  const newFolders = [...sendFoldersInput];
+                                  newFolders[index].filter = e.target.value;
+                                  setSendFoldersInput(newFolders);
+                                }}
+                                className="bg-neutral-950 border border-neutral-800 rounded px-2 py-1.5 focus:ring-1 focus:ring-neutral-700 text-xs w-full text-neutral-300 placeholder-neutral-700 outline-none transition-all"
+                                placeholder="e.g. Peanut Butter.txt (Optional)"
+                              />
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="mt-4 pt-3 border-t border-neutral-800 flex justify-end">
+                        <button
+                          onClick={() => updateSettings({ sendFolders: sendFoldersInput })}
+                          className="bg-red-500 hover:bg-red-600 text-white text-xs font-bold uppercase tracking-widest py-2 px-6 rounded transition-colors"
+                        >
+                          Save
                         </button>
-                        <input 
-                          type="text" 
-                          value={sendFolderInput}
-                          onChange={(e) => setSendFolderInput(e.target.value)}
-                          onBlur={() => updateSettings({ sendFolder: sendFolderInput })}
-                          className="bg-transparent border-none focus:ring-0 text-sm w-full text-neutral-300 placeholder-neutral-700 outline-none"
-                          placeholder="./output_images"
-                        />
-                        <input type="file" ref={sendFolderRef} className="hidden" webkitdirectory="" directory="" onChange={(e) => {
-                          if (e.target.files && e.target.files.length > 0) {
-                            const path = e.target.files[0].webkitRelativePath.split('/')[0];
-                            setSendFolderInput(path);
-                            updateSettings({ sendFolder: path });
-                          }
-                        }} />
                       </div>
                     </div>
                   )}
                   {settingsPanelStep === 2 && (
-                    <div className="bg-neutral-950 rounded-lg p-4 border border-neutral-800">
+                    <div className="bg-neutral-950 rounded-lg p-4 border border-neutral-800 flex flex-col h-full">
                       <div className="flex items-center justify-between mb-3">
-                        <label className="text-xs font-medium text-neutral-500 uppercase block">OUTPUT FOLDER</label>
+                        <label className="text-xs font-medium text-neutral-500 uppercase block">OUTPUT FOLDERS</label>
                         <button 
                           onClick={() => setIsTeamPanelOpen(true)}
                           className="text-neutral-500 hover:text-neutral-300 transition-colors"
@@ -265,25 +301,68 @@ export default function App() {
                           <LayoutGrid size={16} />
                         </button>
                       </div>
-                      <div className="flex items-center gap-3">
-                        <button onClick={() => outputFolderRef.current?.click()} className="text-neutral-500 hover:text-neutral-300">
-                          <FolderOpen size={16} />
+                      <div className="space-y-3 max-h-[300px] overflow-y-auto custom-scrollbar pr-2 flex-1">
+                        {outputFoldersInput.map((output, outIndex) => (
+                          <div key={output.id} className="bg-neutral-900 rounded p-3 border border-neutral-800 space-y-3">
+                            <div className="flex items-center gap-3">
+                              <button onClick={() => { setPickerState({type: 'output', index: outIndex}); globalFolderRef.current?.click(); }} className="text-neutral-500 hover:text-neutral-300">
+                                <FolderOpen size={14} />
+                              </button>
+                              <input
+                                type="text"
+                                value={output.path}
+                                onChange={(e) => {
+                                  const newOutputs = [...outputFoldersInput];
+                                  newOutputs[outIndex].path = e.target.value;
+                                  setOutputFoldersInput(newOutputs);
+                                }}
+                                className="bg-transparent border-none focus:ring-0 text-xs w-full text-neutral-300 placeholder-neutral-700 outline-none"
+                                placeholder="Output folder path"
+                              />
+                              <button onClick={() => {
+                                const newOutputs = outputFoldersInput.filter((_, i) => i !== outIndex);
+                                setOutputFoldersInput(newOutputs);
+                              }} className="text-neutral-500 hover:text-red-400">
+                                <X size={14} />
+                              </button>
+                            </div>
+                            <div className="flex items-center gap-2 flex-wrap bg-neutral-950 p-2 rounded border border-neutral-800">
+                              <span className="text-[9px] text-neutral-500 uppercase w-full mb-1">Grab Sources (1-10):</span>
+                              {output.sources.map((isChecked, srcIndex) => (
+                                <label key={srcIndex} className="flex items-center gap-1 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={isChecked}
+                                    onChange={(e) => {
+                                      const newOutputs = [...outputFoldersInput];
+                                      newOutputs[outIndex].sources[srcIndex] = e.target.checked;
+                                      setOutputFoldersInput(newOutputs);
+                                    }}
+                                    className="w-3 h-3 rounded-sm border-neutral-700 bg-neutral-900 text-red-500 focus:ring-red-500 focus:ring-offset-neutral-950"
+                                  />
+                                  <span className="text-[10px] text-neutral-400">{srcIndex + 1}</span>
+                                </label>
+                              ))}
+                            </div>
+                          </div>
+                        ))}
+                        <button
+                          onClick={() => {
+                            const newOutputs = [...outputFoldersInput, { id: Date.now().toString(), path: '', sources: Array(10).fill(false) }];
+                            setOutputFoldersInput(newOutputs);
+                          }}
+                          className="w-full py-2 rounded border border-dashed border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 transition-colors text-[10px] font-bold uppercase tracking-widest"
+                        >
+                          + Add Output Slot
                         </button>
-                        <input 
-                          type="text" 
-                          value={outputFolderInput}
-                          onChange={(e) => setOutputFolderInput(e.target.value)}
-                          onBlur={() => updateSettings({ outputFolder: outputFolderInput })}
-                          className="bg-transparent border-none focus:ring-0 text-sm w-full text-neutral-300 placeholder-neutral-700 outline-none"
-                          placeholder="./upscaled_images"
-                        />
-                        <input type="file" ref={outputFolderRef} className="hidden" webkitdirectory="" directory="" onChange={(e) => {
-                          if (e.target.files && e.target.files.length > 0) {
-                            const path = e.target.files[0].webkitRelativePath.split('/')[0];
-                            setOutputFolderInput(path);
-                            updateSettings({ outputFolder: path });
-                          }
-                        }} />
+                      </div>
+                      <div className="mt-4 pt-3 border-t border-neutral-800 flex justify-end">
+                        <button
+                          onClick={() => updateSettings({ outputFolders: outputFoldersInput })}
+                          className="bg-red-500 hover:bg-red-600 text-white text-xs font-bold uppercase tracking-widest py-2 px-6 rounded transition-colors"
+                        >
+                          Save
+                        </button>
                       </div>
                     </div>
                   )}
@@ -339,17 +418,17 @@ export default function App() {
                       <div className="p-3 bg-neutral-900 rounded border border-neutral-800">
                         <div className="flex items-center justify-between mb-1">
                           <span className="text-[10px] text-neutral-500 uppercase font-bold">Work To Grab</span>
-                          <span className="text-[10px] text-neutral-400 font-mono">{sendFolderInput || 'Not Set'}</span>
+                          <span className="text-[10px] text-neutral-400 font-mono">{sendFoldersInput.filter(f => f.path.trim() !== '').length} Folders</span>
                         </div>
                         <div className="h-1 bg-neutral-800 rounded-full overflow-hidden">
-                          <div className="h-full bg-neutral-600 w-1/2" />
+                          <div className="h-full bg-neutral-600" style={{ width: `${(sendFoldersInput.filter(f => f.path.trim() !== '').length / 10) * 100}%` }} />
                         </div>
                       </div>
 
                       <div className="p-3 bg-neutral-900 rounded border border-neutral-800">
                         <div className="flex items-center justify-between mb-1">
-                          <span className="text-[10px] text-neutral-500 uppercase font-bold">Output Folder</span>
-                          <span className="text-[10px] text-neutral-400 font-mono">{outputFolderInput || 'Not Set'}</span>
+                          <span className="text-[10px] text-neutral-500 uppercase font-bold">Output Folders</span>
+                          <span className="text-[10px] text-neutral-400 font-mono">{outputFoldersInput.filter(f => f.path.trim() !== '').length} Folders</span>
                         </div>
                         <div className="h-1 bg-neutral-800 rounded-full overflow-hidden">
                           <div className="h-full bg-red-500 w-3/4" />
