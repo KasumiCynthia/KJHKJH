@@ -116,6 +116,7 @@ async function upscaleImage(filePath: string) {
 }
 
 let watcher: any = null;
+let sendWatchers: any[] = Array(10).fill(null);
 
 function startWatcher() {
   if (watcher) watcher.close();
@@ -143,8 +144,82 @@ function startWatcher() {
     upscaleImage(filePath);
   });
 
+  updateSendWatchers();
+
   isWatching = true;
   addLog(`Watcher ACTIVE on: ${WATCH_FOLDER}`, "info");
+}
+
+function updateSendWatchers() {
+  sendWatchers.forEach((w, i) => {
+    if (w) {
+      w.close();
+      sendWatchers[i] = null;
+    }
+  });
+
+  if (!isWatching) return;
+
+  SEND_FOLDERS.forEach((folder, index) => {
+    if (folder.path && fs.existsSync(folder.path)) {
+      const sWatcher = chokidar.watch(folder.path, {
+        ignored: /(^|[\/\\])\../,
+        persistent: true,
+        ignoreInitial: true,
+        awaitWriteFinish: {
+          stabilityThreshold: 1000,
+          pollInterval: 100
+        }
+      });
+
+      sWatcher.on("add", (filePath: string) => {
+        handleSendFolderFile(index, filePath);
+      });
+
+      sendWatchers[index] = sWatcher;
+      addLog(`Watching Grab Source ${index + 1}: ${folder.path}`, "info");
+    }
+  });
+}
+
+async function handleSendFolderFile(index: number, filePath: string) {
+  const fileName = path.basename(filePath);
+  const filter = SEND_FOLDERS[index].filter;
+
+  if (filter && fileName !== filter) {
+    // If filter is set and doesn't match exactly, skip
+    return;
+  }
+
+  addLog(`File detected in Grab Source ${index + 1}: ${fileName}`, "info");
+
+  const targets = OUTPUT_FOLDERS.filter(out => out.sources[index] && out.path);
+  
+  if (targets.length === 0) {
+    addLog(`No output mapping for Grab Source ${index + 1}. File ignored.`, "info");
+    return;
+  }
+
+  try {
+    for (let i = 0; i < targets.length; i++) {
+      const targetDir = path.resolve(targets[i].path);
+      if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+      
+      const targetPath = path.join(targetDir, fileName);
+      
+      if (i === targets.length - 1) {
+        // Move for the last target
+        fs.renameSync(filePath, targetPath);
+        addLog(`Moved ${fileName} to ${targets[i].path}`, "success");
+      } else {
+        // Copy for intermediate targets
+        fs.copyFileSync(filePath, targetPath);
+        addLog(`Copied ${fileName} to ${targets[i].path}`, "success");
+      }
+    }
+  } catch (err: any) {
+    addLog(`Error moving file ${fileName}: ${err.message}`, "error");
+  }
 }
 
 function stopWatcher() {
@@ -152,6 +227,12 @@ function stopWatcher() {
     watcher.close();
     watcher = null;
   }
+  sendWatchers.forEach((w, i) => {
+    if (w) {
+      w.close();
+      sendWatchers[i] = null;
+    }
+  });
   isWatching = false;
   addLog(`Watcher STOPPED.`, "info");
 }
@@ -225,6 +306,7 @@ app.post("/api/settings", (req, res) => {
         if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
       }
     });
+    if (isWatching) updateSendWatchers();
   }
 
   if (outputFolders !== undefined) {
@@ -235,6 +317,7 @@ app.post("/api/settings", (req, res) => {
         if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
       }
     });
+    // Output folders change might affect routing logic, but watchers stay the same
   }
   
   if (watching === true && !isWatching) {

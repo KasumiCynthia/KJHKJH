@@ -37,19 +37,28 @@ export default function App() {
   const globalFolderRef = useRef<HTMLInputElement>(null);
   const [pickerState, setPickerState] = useState<{type: 'send'|'output'|'watch', index?: number} | null>(null);
 
+  const isSettingsOpenRef = useRef(isSettingsOpen);
+  useEffect(() => {
+    isSettingsOpenRef.current = isSettingsOpen;
+  }, [isSettingsOpen]);
+
   const fetchStatus = async () => {
     try {
       const res = await fetch('/api/status');
       const data = await res.json();
       setStatus(data);
-      if (!hostInput) setHostInput(data.comfyUrl);
-      if (!folderInput) setFolderInput(data.watchFolder);
-      if (data.sendFolders && data.sendFolders.length > 0) {
-        const formatted = data.sendFolders.map((f: any) => typeof f === 'string' ? { path: f, filter: '' } : f);
-        setSendFoldersInput(formatted);
+      
+      // Only update inputs if settings are NOT open to prevent overwriting user changes
+      if (!isSettingsOpenRef.current) {
+        if (!hostInput) setHostInput(data.comfyUrl);
+        if (!folderInput) setFolderInput(data.watchFolder);
+        if (data.sendFolders && data.sendFolders.length > 0) {
+          const formatted = data.sendFolders.map((f: any) => typeof f === 'string' ? { path: f, filter: '' } : f);
+          setSendFoldersInput(formatted);
+        }
+        if (data.outputFolders) setOutputFoldersInput(data.outputFolders);
+        setIsTeamModeEnabled(data.isTeamModeEnabled);
       }
-      if (data.outputFolders) setOutputFoldersInput(data.outputFolders);
-      setIsTeamModeEnabled(data.isTeamModeEnabled);
     } catch (err) {
       console.error('Failed to fetch status', err);
     } finally {
@@ -91,9 +100,14 @@ export default function App() {
     }
   };
 
+  const fetchStatusRef = useRef(fetchStatus);
+  useEffect(() => {
+    fetchStatusRef.current = fetchStatus;
+  });
+
   useEffect(() => {
     fetchStatus();
-    const interval = setInterval(fetchStatus, 2000);
+    const interval = setInterval(() => fetchStatusRef.current(), 2000);
     return () => clearInterval(interval);
   }, []);
 
