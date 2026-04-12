@@ -14,8 +14,6 @@ interface Status {
   currentScale: number;
   comfyUrl: string;
   watchFolder: string;
-  sendFolders: { path: string, filter: string }[];
-  outputFolders: { id: string, path: string, sources: boolean[] }[];
   isTeamModeEnabled: boolean;
   logs: LogEntry[];
   isConnected: boolean;
@@ -26,33 +24,19 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [hostInput, setHostInput] = useState('');
   const [folderInput, setFolderInput] = useState('');
-  const [sendFoldersInput, setSendFoldersInput] = useState<{ path: string, filter: string }[]>(Array.from({ length: 10 }, () => ({ path: '', filter: '' })));
-  const [outputFoldersInput, setOutputFoldersInput] = useState<{ id: string, path: string, sources: boolean[] }[]>([]);
   const [testingConnection, setTestingConnection] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isLmSettingsOpen, setIsLmSettingsOpen] = useState(false);
-  const [settingsPanelStep, setSettingsPanelStep] = useState(0);
   const [isTeamPanelOpen, setIsTeamPanelOpen] = useState(false);
   const [isTeamModeEnabled, setIsTeamModeEnabled] = useState(false);
 
-  const [lmUrlInput, setLmUrlInput] = useState('http://127.0.0.1:1234');
-  const [lmModelInput, setLmModelInput] = useState('');
-  const [availableModels, setAvailableModels] = useState<any[]>([]);
-  const [isAiRunning, setIsAiRunning] = useState(false);
-  const processedFilesRef = useRef<Record<string, number>>({});
-
   const watchFolderRef = useRef<HTMLInputElement>(null);
   const globalFolderRef = useRef<HTMLInputElement>(null);
-  const [pickerState, setPickerState] = useState<{type: 'send'|'output'|'watch', index?: number} | null>(null);
+  const [pickerState, setPickerState] = useState<{type: 'watch', index?: number} | null>(null);
 
   const isSettingsOpenRef = useRef(isSettingsOpen);
-  const isLmSettingsOpenRef = useRef(isLmSettingsOpen);
   useEffect(() => {
     isSettingsOpenRef.current = isSettingsOpen;
   }, [isSettingsOpen]);
-  useEffect(() => {
-    isLmSettingsOpenRef.current = isLmSettingsOpen;
-  }, [isLmSettingsOpen]);
 
   const fetchStatus = async () => {
     try {
@@ -61,17 +45,10 @@ export default function App() {
       setStatus(data);
       
       // Only update inputs if settings are NOT open to prevent overwriting user changes
-      if (!isSettingsOpenRef.current && !isLmSettingsOpenRef.current) {
+      if (!isSettingsOpenRef.current) {
         if (!hostInput) setHostInput(data.comfyUrl);
         if (!folderInput) setFolderInput(data.watchFolder);
-        if (data.sendFolders && data.sendFolders.length > 0) {
-          const formatted = data.sendFolders.map((f: any) => typeof f === 'string' ? { path: f, filter: '' } : f);
-          setSendFoldersInput(formatted);
-        }
-        if (data.outputFolders) setOutputFoldersInput(data.outputFolders);
         setIsTeamModeEnabled(data.isTeamModeEnabled);
-        if (data.lmUrl) setLmUrlInput(data.lmUrl);
-        if (data.lmModel) setLmModelInput(data.lmModel);
       }
     } catch (err) {
       console.error('Failed to fetch status', err);
@@ -125,7 +102,7 @@ export default function App() {
     return () => clearInterval(interval);
   }, []);
 
-  const updateSettings = async (newSettings: { scale?: number; watching?: boolean; comfyUrl?: string; watchFolder?: string; sendFolders?: { path: string, filter: string }[]; outputFolders?: any[]; isTeamModeEnabled?: boolean; lmUrl?: string; lmModel?: string }) => {
+  const updateSettings = async (newSettings: { scale?: number; watching?: boolean; comfyUrl?: string; watchFolder?: string; isTeamModeEnabled?: boolean }) => {
     try {
       const res = await fetch('/api/settings', {
         method: 'POST',
@@ -141,122 +118,12 @@ export default function App() {
     }
   };
 
-  const fetchLmModels = async () => {
-    try {
-      const url = lmUrlInput.replace(/\/$/, '');
-      const res = await fetch(`${url}/v1/models`);
-      const data = await res.json();
-      if (data.data) {
-        setAvailableModels(data.data);
-        if (data.data.length > 0 && !lmModelInput) {
-          setLmModelInput(data.data[0].id);
-        }
-      } else {
-        alert(`Failed to fetch models.`);
-      }
-    } catch (err: any) {
-      alert(`Error fetching models: ${err.message}. Make sure LM Studio is running and CORS is enabled.`);
-    }
-  };
-
-  const runAiProcessing = async () => {
-    if (!lmUrlInput || !lmModelInput) {
-      alert("Please configure LM Studio URL and Model first.");
-      setIsAiRunning(false);
-      return;
-    }
-
-    try {
-      const prepRes = await fetch('/api/run-ai-prepare');
-      const prepData = await prepRes.json();
-      
-      if (!prepData.success || !prepData.jobs || prepData.jobs.length === 0) {
-        return;
-      }
-
-      const url = lmUrlInput.replace(/\/$/, '');
-      const systemPrompt = "Check each folder set by the user for the contents inside. If the user set only one file to focus on, only focus on the name of the file that the user set. The AI will read the contents of the file (if it's a .txt or other reable document) and generate the exact contents of that file.";
-
-      let processedAny = false;
-
-      for (const job of prepData.jobs) {
-        const fileKey = `${job.sourceIndex}-${job.fileName}`;
-        if (processedFilesRef.current[fileKey] === job.mtimeMs) {
-          continue; // Skip already processed file
-        }
-
-        processedAny = true;
-        await fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: `Sending ${job.fileName} to AI (${lmModelInput})...`, type: "info" }) });
-        
-        try {
-          const aiRes = await fetch(`${url}/v1/chat/completions`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              model: lmModelInput,
-              messages: [
-                { role: "system", content: systemPrompt },
-                { role: "user", content: `File Name: ${job.fileName}\nFile Date/Time: ${job.mtime}\n\nFile Content:\n${job.content}` }
-              ],
-              temperature: 0.7
-            })
-          });
-
-          if (!aiRes.ok) throw new Error(`LM Studio returned ${aiRes.status}`);
-          const aiData = await aiRes.json();
-          const aiOutput = aiData.choices[0].message.content;
-
-          await fetch('/api/save-ai-output', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              fileName: job.fileName,
-              content: aiOutput,
-              targets: job.targets
-            })
-          });
-
-          // Mark as processed
-          processedFilesRef.current[fileKey] = job.mtimeMs;
-
-        } catch (err: any) {
-          await fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: `AI Error on ${job.fileName}: ${err.message}`, type: "error" }) });
-        }
-      }
-      
-      if (processedAny) {
-        await fetch('/api/log', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message: "AI Processing Run Complete.", type: "success" }) });
-      }
-
-    } catch (err: any) {
-      console.error(`Error starting AI run: ${err.message}`);
-    }
-  };
-
-  useEffect(() => {
-    let interval: any;
-    if (isAiRunning) {
-      runAiProcessing(); // Run immediately
-      interval = setInterval(runAiProcessing, 10000); // Then every 10s
-    }
-    return () => clearInterval(interval);
-  }, [isAiRunning, lmUrlInput, lmModelInput]);
-
-
   const handleGlobalFolderSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0 && pickerState) {
       const path = e.target.files[0].webkitRelativePath.split('/')[0];
       if (pickerState.type === 'watch') {
         setFolderInput(path);
         updateSettings({ watchFolder: path });
-      } else if (pickerState.type === 'send' && pickerState.index !== undefined) {
-        const newFolders = [...sendFoldersInput];
-        newFolders[pickerState.index].path = path;
-        setSendFoldersInput(newFolders);
-      } else if (pickerState.type === 'output' && pickerState.index !== undefined) {
-        const newOutputs = [...outputFoldersInput];
-        newOutputs[pickerState.index].path = path;
-        setOutputFoldersInput(newOutputs);
       }
     }
     if (globalFolderRef.current) globalFolderRef.current.value = '';
@@ -264,88 +131,46 @@ export default function App() {
 
   if (loading || !status) {
     return (
-      <div className="min-h-screen bg-neutral-950 flex items-center justify-center font-sans">
+      <div className="min-h-screen bg-black flex items-center justify-center font-sans">
         <div className="flex flex-col items-center gap-4">
-          <div className="w-12 h-12 border-4 border-neutral-800 border-t-red-500 rounded-full animate-spin"></div>
-          <div className="text-neutral-400 font-medium tracking-widest uppercase text-xs">Initializing...</div>
+          <div className="w-12 h-12 border-4 border-neutral-800 border-t-[#00ff66] rounded-full animate-spin"></div>
+          <div className="text-[#00ff66] font-display font-bold tracking-[0.3em] uppercase text-sm text-glow">INITIALIZING...</div>
         </div>
       </div>
     );
   }
 
-  return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-200 font-sans selection:bg-red-900/50 selection:text-white">
-      {/* Top Navigation Bar */}
-      <nav className="bg-neutral-900 border-b border-neutral-800 px-6 py-4 sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            <h1 className="text-xl font-semibold tracking-wide text-neutral-100">
-              UPSCALE AUTO
-            </h1>
-          </div>
-          
-          <div className="flex items-center gap-4 relative">
-            <button 
-              onClick={() => setIsLmSettingsOpen(!isLmSettingsOpen)}
-              className={`p-2 rounded transition-colors ${isLmSettingsOpen ? 'bg-neutral-800 text-white' : 'text-neutral-500 hover:text-neutral-300'}`}
-              title="LM Instance Settings"
-            >
-              <Bot size={20} />
-            </button>
-            {isLmSettingsOpen && (
-              <div className="absolute top-12 right-12 w-80 bg-neutral-950 border border-neutral-800 rounded-lg shadow-2xl p-4 z-50">
-                <h3 className="text-xs font-bold text-neutral-500 uppercase mb-4">LM Instance Settings</h3>
-                <div className="space-y-4">
-                  <div>
-                    <label className="text-[10px] text-neutral-400 uppercase mb-1 block">LM Instance URL</label>
-                    <div className="flex gap-2">
-                      <input 
-                        type="text" 
-                        value={lmUrlInput} 
-                        onChange={e => setLmUrlInput(e.target.value)}
-                        className="bg-neutral-900 border border-neutral-800 rounded px-2 py-1.5 text-xs w-full text-neutral-300 outline-none focus:border-neutral-600"
-                        placeholder="http://127.0.0.1:1234"
-                      />
-                      <button onClick={fetchLmModels} className="bg-neutral-800 hover:bg-neutral-700 px-3 rounded text-xs text-neutral-300 transition-colors font-bold">
-                        Connect
-                      </button>
-                    </div>
-                  </div>
-                  <div>
-                    <label className="text-[10px] text-neutral-400 uppercase mb-1 block">Model</label>
-                    <select 
-                      value={lmModelInput} 
-                      onChange={e => setLmModelInput(e.target.value)}
-                      className="bg-neutral-900 border border-neutral-800 rounded px-2 py-1.5 text-xs w-full text-neutral-300 outline-none focus:border-neutral-600"
-                    >
-                      <option value="">Select a model...</option>
-                      {availableModels.map(m => (
-                        <option key={m.id} value={m.id}>{m.id}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="flex justify-end pt-2">
-                    <button 
-                      onClick={() => { updateSettings({ lmUrl: lmUrlInput, lmModel: lmModelInput }); setIsLmSettingsOpen(false); }}
-                      className="bg-red-500 hover:bg-red-600 text-white text-xs font-bold uppercase tracking-widest py-2 px-6 rounded transition-colors"
-                    >
-                      Save
-                    </button>
-                  </div>
-                </div>
-              </div>
-            )}
+  const isWatching = status?.isWatching || false;
+  const themeColor = isWatching ? '#00ff66' : '#ff003c';
 
-            <button 
-              onClick={() => setIsSettingsOpen(true)}
-              className="text-neutral-400 hover:text-white transition-colors bg-neutral-900 border border-neutral-800 p-2 rounded-md hover:border-neutral-600"
-              title="Settings"
-            >
-              <Settings size={20} />
-            </button>
+  return (
+    <div 
+      className="min-h-screen bg-black text-white font-sans selection:bg-[var(--theme-color)] selection:text-black relative overflow-hidden"
+      style={{ '--theme-color': themeColor } as React.CSSProperties}
+    >
+      <div className="absolute inset-0 scanlines z-0"></div>
+      
+      <div className="relative z-10">
+        {/* Top Navigation Bar */}
+        <nav className="border-b border-[var(--theme-color)]/30 bg-black/80 backdrop-blur px-6 py-4 sticky top-0 z-50">
+          <div className="max-w-7xl mx-auto flex items-center justify-between">
+            <div className="flex items-center gap-4">
+              <h1 className="text-2xl font-display font-bold tracking-[0.2em] text-[var(--theme-color)] text-glow uppercase">
+                UPSCALE AUTO
+              </h1>
+            </div>
+            
+            <div className="flex items-center gap-4 relative">
+              <button 
+                onClick={() => setIsSettingsOpen(true)}
+                className="text-[var(--theme-color)] hover:text-white transition-all duration-300 p-2 rounded-md hover:rotate-12"
+                title="Settings"
+              >
+                <Settings size={20} />
+              </button>
+            </div>
           </div>
-        </div>
-      </nav>
+        </nav>
 
       {/* Settings Panel */}
       <AnimatePresence>
@@ -364,18 +189,15 @@ export default function App() {
                 width: isTeamPanelOpen ? '840px' : '448px'
               }}
               exit={{ scale: 0.95, opacity: 0 }}
-              className="bg-neutral-900 border border-neutral-800 rounded-xl p-6 shadow-2xl flex gap-6 overflow-hidden"
+              className="tech-panel rounded-none p-6 flex gap-6 overflow-hidden"
             >
-              <div className={isTeamPanelOpen ? 'w-[340px] shrink-0' : 'w-full'}>
+              <div className="w-full">
                 <div className="flex items-center justify-between mb-6">
-                  <h2 className="text-lg font-bold text-neutral-100 uppercase tracking-widest">
-                    {settingsPanelStep === 0 ? 'INCOMING WORK' : settingsPanelStep === 1 ? 'WORK TO GRAB' : 'OUTPUT FOLDER'}
+                  <h2 className="text-lg font-display font-bold text-[var(--theme-color)] text-glow uppercase tracking-widest">
+                    SETTINGS
                   </h2>
                   <div className="flex items-center gap-4">
-                    <button onClick={() => setSettingsPanelStep((prev) => (prev + 1) % 3)} className="text-neutral-400 hover:text-white">
-                      <ArrowRight size={20} />
-                    </button>
-                    <button onClick={() => setIsSettingsOpen(false)} className="text-neutral-400 hover:text-white">
+                    <button onClick={() => setIsSettingsOpen(false)} className="text-[var(--theme-color)]/70 hover:text-[var(--theme-color)] transition-colors">
                       <X size={20} />
                     </button>
                   </div>
@@ -383,20 +205,20 @@ export default function App() {
 
                 <div className="space-y-6">
                   <input type="file" ref={globalFolderRef} className="hidden" webkitdirectory="" directory="" onChange={handleGlobalFolderSelect} />
-                  <div className="bg-neutral-950 rounded-lg p-4 border border-neutral-800">
-                    <label className="text-xs font-medium text-neutral-500 uppercase mb-3 block">COMFYUI HOST</label>
+                  <div className="bg-black/50 p-4 border border-[var(--theme-color)]/30">
+                    <label className="text-xs font-mono text-[var(--theme-color)]/70 uppercase mb-3 block">COMFYUI HOST</label>
                     <div className="flex items-center gap-3">
                       <input 
                         type="text" 
                         value={hostInput}
                         onChange={(e) => setHostInput(e.target.value)}
                         onBlur={() => updateSettings({ comfyUrl: hostInput })}
-                        className="bg-transparent border-none focus:ring-0 text-sm w-full text-neutral-300 placeholder-neutral-700 outline-none"
+                        className="input-tech text-sm w-full p-2"
                         placeholder="ComfyUI Host URL"
                       />
                       <button 
                         onClick={discoverComfyUI}
-                        className="text-neutral-400 hover:text-red-400 transition-colors p-1"
+                        className="text-[var(--theme-color)]/70 hover:text-[var(--theme-color)] hover:box-glow transition-all p-2 border border-[var(--theme-color)]/30 bg-black"
                         title="Scan for ComfyUI"
                       >
                         <Wifi size={16} />
@@ -404,149 +226,22 @@ export default function App() {
                     </div>
                   </div>
 
-                  {settingsPanelStep === 0 && (
-                    <div className="bg-neutral-950 rounded-lg p-4 border border-neutral-800">
-                      <label className="text-xs font-medium text-neutral-500 uppercase mb-3 block">WATCH FOLDER</label>
-                      <div className="flex items-center gap-3">
-                        <button onClick={() => { setPickerState({type: 'watch'}); globalFolderRef.current?.click(); }} className="text-neutral-500 hover:text-neutral-300">
-                          <FolderOpen size={16} />
-                        </button>
-                        <input 
-                          type="text" 
-                          value={folderInput}
-                          onChange={(e) => setFolderInput(e.target.value)}
-                          onBlur={() => updateSettings({ watchFolder: folderInput })}
-                          className="bg-transparent border-none focus:ring-0 text-sm w-full text-neutral-300 placeholder-neutral-700 outline-none"
-                          placeholder="./input_images"
-                        />
-                      </div>
+                  <div className="bg-black/50 p-4 border border-[var(--theme-color)]/30">
+                    <label className="text-xs font-mono text-[var(--theme-color)]/70 uppercase mb-3 block">WATCH FOLDER</label>
+                    <div className="flex items-center gap-3">
+                      <button onClick={() => { setPickerState({type: 'watch'}); globalFolderRef.current?.click(); }} className="text-[var(--theme-color)]/70 hover:text-[var(--theme-color)] hover:box-glow transition-all p-2 border border-[var(--theme-color)]/30 bg-black">
+                        <FolderOpen size={16} />
+                      </button>
+                      <input 
+                        type="text" 
+                        value={folderInput}
+                        onChange={(e) => setFolderInput(e.target.value)}
+                        onBlur={() => updateSettings({ watchFolder: folderInput })}
+                        className="input-tech text-sm w-full p-2"
+                        placeholder="./input_images"
+                      />
                     </div>
-                  )}
-                  {settingsPanelStep === 1 && (
-                    <div className="bg-neutral-950 rounded-lg p-4 border border-neutral-800 flex flex-col h-full">
-                      <label className="text-xs font-medium text-neutral-500 uppercase mb-3 block">WORK TO GRAB (10 SLOTS)</label>
-                      <div className="space-y-2 max-h-[300px] overflow-y-auto custom-scrollbar pr-2 flex-1">
-                        {sendFoldersInput.map((folder, index) => (
-                          <div key={index} className="flex flex-col gap-2 bg-neutral-900 p-3 rounded border border-neutral-800">
-                            <div className="flex items-center gap-3">
-                              <span className="text-[10px] font-bold text-neutral-500 w-4 text-center">{index + 1}</span>
-                              <button onClick={() => { setPickerState({type: 'send', index}); globalFolderRef.current?.click(); }} className="text-neutral-500 hover:text-neutral-300">
-                                <FolderOpen size={14} />
-                              </button>
-                              <input
-                                type="text"
-                                value={folder.path}
-                                onChange={(e) => {
-                                  const newFolders = [...sendFoldersInput];
-                                  newFolders[index].path = e.target.value;
-                                  setSendFoldersInput(newFolders);
-                                }}
-                                className="bg-transparent border-none focus:ring-0 text-xs w-full text-neutral-300 placeholder-neutral-700 outline-none"
-                                placeholder={`Folder ${index + 1} path`}
-                              />
-                            </div>
-                            <div className="flex items-center gap-3 pl-8">
-                              <input
-                                type="text"
-                                value={folder.filter}
-                                onChange={(e) => {
-                                  const newFolders = [...sendFoldersInput];
-                                  newFolders[index].filter = e.target.value;
-                                  setSendFoldersInput(newFolders);
-                                }}
-                                className="bg-neutral-950 border border-neutral-800 rounded px-2 py-1.5 focus:ring-1 focus:ring-neutral-700 text-xs w-full text-neutral-300 placeholder-neutral-700 outline-none transition-all"
-                                placeholder="e.g. Peanut Butter.txt (Optional)"
-                              />
-                            </div>
-                          </div>
-                        ))}
-                      </div>
-                      <div className="mt-4 pt-3 border-t border-neutral-800 flex justify-end">
-                        <button
-                          onClick={() => updateSettings({ sendFolders: sendFoldersInput })}
-                          className="bg-red-500 hover:bg-red-600 text-white text-xs font-bold uppercase tracking-widest py-2 px-6 rounded transition-colors"
-                        >
-                          Save
-                        </button>
-                      </div>
-                    </div>
-                  )}
-                  {settingsPanelStep === 2 && (
-                    <div className="bg-neutral-950 rounded-lg p-4 border border-neutral-800 flex flex-col h-full">
-                      <div className="flex items-center justify-between mb-3">
-                        <label className="text-xs font-medium text-neutral-500 uppercase block">OUTPUT FOLDERS</label>
-                        <button 
-                          onClick={() => setIsTeamPanelOpen(true)}
-                          className="text-neutral-500 hover:text-neutral-300 transition-colors"
-                        >
-                          <LayoutGrid size={16} />
-                        </button>
-                      </div>
-                      <div className="space-y-3 max-h-[300px] overflow-y-auto custom-scrollbar pr-2 flex-1">
-                        {outputFoldersInput.map((output, outIndex) => (
-                          <div key={output.id} className="bg-neutral-900 rounded p-3 border border-neutral-800 space-y-3">
-                            <div className="flex items-center gap-3">
-                              <button onClick={() => { setPickerState({type: 'output', index: outIndex}); globalFolderRef.current?.click(); }} className="text-neutral-500 hover:text-neutral-300">
-                                <FolderOpen size={14} />
-                              </button>
-                              <input
-                                type="text"
-                                value={output.path}
-                                onChange={(e) => {
-                                  const newOutputs = [...outputFoldersInput];
-                                  newOutputs[outIndex].path = e.target.value;
-                                  setOutputFoldersInput(newOutputs);
-                                }}
-                                className="bg-transparent border-none focus:ring-0 text-xs w-full text-neutral-300 placeholder-neutral-700 outline-none"
-                                placeholder="Output folder path"
-                              />
-                              <button onClick={() => {
-                                const newOutputs = outputFoldersInput.filter((_, i) => i !== outIndex);
-                                setOutputFoldersInput(newOutputs);
-                              }} className="text-neutral-500 hover:text-red-400">
-                                <X size={14} />
-                              </button>
-                            </div>
-                            <div className="flex items-center gap-2 flex-wrap bg-neutral-950 p-2 rounded border border-neutral-800">
-                              <span className="text-[9px] text-neutral-500 uppercase w-full mb-1">Grab Sources (1-10):</span>
-                              {output.sources.map((isChecked, srcIndex) => (
-                                <label key={srcIndex} className="flex items-center gap-1 cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    checked={isChecked}
-                                    onChange={(e) => {
-                                      const newOutputs = [...outputFoldersInput];
-                                      newOutputs[outIndex].sources[srcIndex] = e.target.checked;
-                                      setOutputFoldersInput(newOutputs);
-                                    }}
-                                    className="w-3 h-3 rounded-sm border-neutral-700 bg-neutral-900 text-red-500 focus:ring-red-500 focus:ring-offset-neutral-950"
-                                  />
-                                  <span className="text-[10px] text-neutral-400">{srcIndex + 1}</span>
-                                </label>
-                              ))}
-                            </div>
-                          </div>
-                        ))}
-                        <button
-                          onClick={() => {
-                            const newOutputs = [...outputFoldersInput, { id: Date.now().toString(), path: '', sources: Array(10).fill(false) }];
-                            setOutputFoldersInput(newOutputs);
-                          }}
-                          className="w-full py-2 rounded border border-dashed border-neutral-700 text-neutral-400 hover:text-neutral-200 hover:border-neutral-500 transition-colors text-[10px] font-bold uppercase tracking-widest"
-                        >
-                          + Add Output Slot
-                        </button>
-                      </div>
-                      <div className="mt-4 pt-3 border-t border-neutral-800 flex justify-end">
-                        <button
-                          onClick={() => updateSettings({ outputFolders: outputFoldersInput })}
-                          className="bg-red-500 hover:bg-red-600 text-white text-xs font-bold uppercase tracking-widest py-2 px-6 rounded transition-colors"
-                        >
-                          Save
-                        </button>
-                      </div>
-                    </div>
-                  )}
+                  </div>
                 </div>
               </div>
 
@@ -556,68 +251,48 @@ export default function App() {
                     initial={{ x: 100, opacity: 0 }}
                     animate={{ x: 0, opacity: 1 }}
                     exit={{ x: 100, opacity: 0 }}
-                    className="flex-1 bg-neutral-950 rounded-lg border border-neutral-800 p-6 relative"
+                    className="flex-1 bg-black/50 border border-[var(--theme-color)]/30 p-6 relative"
                   >
                     <button 
                       onClick={() => setIsTeamPanelOpen(false)}
-                      className="absolute top-4 right-4 text-neutral-500 hover:text-white"
+                      className="absolute top-4 right-4 text-[var(--theme-color)]/70 hover:text-[var(--theme-color)]"
                     >
                       <X size={18} />
                     </button>
 
                     <div className="flex items-center justify-between mb-6">
-                      <h3 className="text-sm font-bold text-neutral-100 uppercase tracking-widest">Team Dashboard</h3>
+                      <h3 className="text-sm font-display font-bold text-[var(--theme-color)] text-glow uppercase tracking-widest">Team Dashboard</h3>
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] font-medium text-neutral-500 uppercase">Team Mode</span>
+                        <span className="text-[10px] font-mono text-[var(--theme-color)]/70 uppercase">Team Mode</span>
                         <button 
                           onClick={() => {
                             const newValue = !isTeamModeEnabled;
                             setIsTeamModeEnabled(newValue);
                             updateSettings({ isTeamModeEnabled: newValue });
                           }}
-                          className={`w-8 h-4 rounded-full transition-colors relative ${isTeamModeEnabled ? 'bg-red-500' : 'bg-neutral-800'}`}
+                          className={`w-8 h-4 rounded-none border border-[var(--theme-color)] transition-colors relative ${isTeamModeEnabled ? 'bg-[var(--theme-color)]' : 'bg-black'}`}
                         >
                           <motion.div 
                             animate={{ x: isTeamModeEnabled ? 16 : 2 }}
-                            className="absolute top-1 left-0 w-2 h-2 bg-white rounded-full"
+                            className={`absolute top-0.5 left-0 w-3 h-3 ${isTeamModeEnabled ? 'bg-black' : 'bg-[var(--theme-color)]'}`}
                           />
                         </button>
                       </div>
                     </div>
 
                     <div className="space-y-4">
-                      <div className="p-3 bg-neutral-900 rounded border border-neutral-800">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-[10px] text-neutral-500 uppercase font-bold">Incoming Work</span>
-                          <span className="text-[10px] text-neutral-400 font-mono">{folderInput || 'Not Set'}</span>
+                      <div className="p-3 bg-black/80 border border-[var(--theme-color)]/30">
+                        <div className="flex items-center justify-between mb-2">
+                          <span className="text-[10px] text-[var(--theme-color)]/70 uppercase font-bold font-mono">Incoming Work</span>
+                          <span className="text-[10px] text-[var(--theme-color)] font-mono">{folderInput || 'Not Set'}</span>
                         </div>
-                        <div className="h-1 bg-neutral-800 rounded-full overflow-hidden">
-                          <div className="h-full bg-neutral-600 w-1/3" />
-                        </div>
-                      </div>
-
-                      <div className="p-3 bg-neutral-900 rounded border border-neutral-800">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-[10px] text-neutral-500 uppercase font-bold">Work To Grab</span>
-                          <span className="text-[10px] text-neutral-400 font-mono">{sendFoldersInput.filter(f => f.path.trim() !== '').length} Folders</span>
-                        </div>
-                        <div className="h-1 bg-neutral-800 rounded-full overflow-hidden">
-                          <div className="h-full bg-neutral-600" style={{ width: `${(sendFoldersInput.filter(f => f.path.trim() !== '').length / 10) * 100}%` }} />
+                        <div className="h-1 bg-black border border-[var(--theme-color)]/30 overflow-hidden">
+                          <div className="h-full bg-[var(--theme-color)] w-1/3 box-glow" />
                         </div>
                       </div>
 
-                      <div className="p-3 bg-neutral-900 rounded border border-neutral-800">
-                        <div className="flex items-center justify-between mb-1">
-                          <span className="text-[10px] text-neutral-500 uppercase font-bold">Output Folders</span>
-                          <span className="text-[10px] text-neutral-400 font-mono">{outputFoldersInput.filter(f => f.path.trim() !== '').length} Folders</span>
-                        </div>
-                        <div className="h-1 bg-neutral-800 rounded-full overflow-hidden">
-                          <div className="h-full bg-red-500 w-3/4" />
-                        </div>
-                      </div>
-
-                      <p className="text-[10px] text-neutral-600 italic leading-relaxed mt-4">
-                        Optimized for distributed teams and standby editors. Enable Team Mode to synchronize workflows across multiple products.
+                      <p className="text-[10px] text-[var(--theme-color)]/50 font-mono italic leading-relaxed mt-4">
+                        // Optimized for distributed teams and standby editors. Enable Team Mode to synchronize workflows across multiple products.
                       </p>
                     </div>
                   </motion.div>
@@ -628,27 +303,27 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      <main className="max-w-7xl mx-auto p-6 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8">
+      <main className="max-w-7xl mx-auto p-6 md:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8 relative z-10">
         
         {/* Left Panel: Configuration */}
         <div className="lg:col-span-4 space-y-6">
-          <div className="bg-neutral-900 rounded-xl p-6 border border-neutral-800">
-            <h2 className="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-6 flex items-center gap-3">
+          <div className="tech-panel p-6">
+            <h2 className="text-sm font-display font-bold uppercase tracking-[0.3em] text-[var(--theme-color)] text-glow mb-6 flex items-center gap-3">
               PARAMETERS
             </h2>
 
             <div className="space-y-8">
               <div>
-                <label className="text-xs font-medium text-neutral-500 uppercase mb-3 block">MULTIPLIER</label>
+                <label className="text-xs font-mono text-[var(--theme-color)]/70 uppercase mb-3 block">MULTIPLIER</label>
                 <div className="grid grid-cols-3 gap-3">
                   {[1.5, 2, 4].map((s) => (
                     <button
                       key={s}
                       onClick={() => updateSettings({ scale: s })}
-                      className={`py-3 rounded-lg text-sm font-medium transition-all border ${
+                      className={`py-3 font-mono text-sm font-bold transition-all border-2 ${
                         status.currentScale === s 
-                          ? 'bg-red-500/10 border-red-500 text-red-400' 
-                          : 'bg-neutral-950 border-neutral-800 text-neutral-400 hover:border-neutral-700'
+                          ? 'bg-[var(--theme-color)]/20 border-[var(--theme-color)] text-[var(--theme-color)]' 
+                          : 'bg-black border-[var(--theme-color)]/30 text-[var(--theme-color)]/50 hover:border-[var(--theme-color)]/70 hover:text-[var(--theme-color)]'
                       }`}
                     >
                       {s}X
@@ -659,33 +334,8 @@ export default function App() {
 
               <div className="flex gap-4">
                 <button
-                  onClick={() => setIsAiRunning(!isAiRunning)}
-                  className={`w-full py-4 rounded-lg flex items-center justify-center gap-3 font-medium uppercase tracking-wider transition-all border ${
-                    isAiRunning 
-                      ? 'bg-green-500/10 border-green-500/50 text-green-400 hover:bg-green-500/20' 
-                      : 'bg-green-600 border-green-600 text-white hover:bg-green-500'
-                  }`}
-                >
-                  {isAiRunning ? (
-                    <>
-                      <Square size={18} fill="currentColor" />
-                      STOP AI
-                    </>
-                  ) : (
-                    <>
-                      <Play size={18} fill="currentColor" />
-                      RUN AI
-                    </>
-                  )}
-                </button>
-
-                <button
                   onClick={() => updateSettings({ watching: !status.isWatching })}
-                  className={`w-full py-4 rounded-lg flex items-center justify-center gap-3 font-medium uppercase tracking-wider transition-all border ${
-                    status.isWatching 
-                      ? 'bg-red-500/10 border-red-500/50 text-red-400 hover:bg-red-500/20' 
-                      : 'bg-neutral-100 border-neutral-100 text-neutral-900 hover:bg-white'
-                  }`}
+                  className={`w-full py-4 flex items-center justify-center gap-3 font-display font-bold uppercase tracking-[0.2em] transition-all border-2 border-[var(--theme-color)] text-[var(--theme-color)] hover:bg-[var(--theme-color)]/10 hover:box-glow text-glow`}
                 >
                   {status.isWatching ? (
                     <>
@@ -695,7 +345,7 @@ export default function App() {
                   ) : (
                     <>
                       <Play size={18} fill="currentColor" />
-                      Start Auto
+                      START AUTO
                     </>
                   )}
                 </button>
@@ -703,28 +353,28 @@ export default function App() {
             </div>
           </div>
 
-          <div className="bg-neutral-900 rounded-xl p-6 border border-neutral-800">
-            <h3 className="text-xs font-bold uppercase tracking-widest text-neutral-400 mb-5 flex items-center gap-2">
+          <div className="tech-panel p-6">
+            <h3 className="text-sm font-display font-bold uppercase tracking-[0.3em] text-[var(--theme-color)] text-glow mb-5 flex items-center gap-2">
               TELEMETRY
             </h3>
-            <div className="space-y-4 text-sm">
-              <div className="flex justify-between items-center border-b border-neutral-800 pb-3">
-                <span className="text-neutral-500">NODE STATE</span>
+            <div className="space-y-4 font-mono text-sm">
+              <div className="flex justify-between items-center border-b border-[var(--theme-color)]/30 pb-3">
+                <span className="text-[var(--theme-color)]/70">NODE STATE</span>
                 {status.isConnected ? (
-                  <span className="text-emerald-400 font-medium">ONLINE</span>
+                  <span className="text-[var(--theme-color)] text-glow font-bold">ONLINE</span>
                 ) : (
                   <div className="flex flex-col items-end">
-                    <span className="text-red-500 font-medium">OFFLINE</span>
-                    <span className="text-[10px] text-red-500">Error - connect to comfy UI!</span>
+                    <span className="text-[#ff003c] font-bold">OFFLINE</span>
+                    <span className="text-[10px] text-[#ff003c]">Error - connect to comfy UI!</span>
                   </div>
                 )}
               </div>
               <div className="flex justify-between items-center pb-1">
-                <span className="text-neutral-500">ACTIVE MODEL</span>
+                <span className="text-[var(--theme-color)]/70">ACTIVE MODEL</span>
                 {status.isConnected ? (
-                  <span className="text-neutral-300">4x-UltraSharp</span>
+                  <span className="text-[var(--theme-color)]">4x-UltraSharp</span>
                 ) : (
-                  <span className="text-red-500 font-medium">OFFLINE</span>
+                  <span className="text-[#ff003c] font-bold">OFFLINE</span>
                 )}
               </div>
             </div>
@@ -735,12 +385,12 @@ export default function App() {
         <div className="lg:col-span-8 flex flex-col h-[calc(100vh-12rem)]">
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-3">
-              <div className="bg-neutral-900 p-2 rounded-lg border border-neutral-800">
-                <Clock size={16} className="text-neutral-400" />
+              <div className="bg-black p-2 border border-[var(--theme-color)]/50">
+                <Clock size={16} className="text-[var(--theme-color)]" />
               </div>
-              <h2 className="text-sm font-bold tracking-widest text-neutral-300 uppercase">DATA STREAM</h2>
+              <h2 className="text-sm font-display font-bold tracking-[0.3em] text-[var(--theme-color)] text-glow uppercase">DATA STREAM</h2>
             </div>
-            <div className="text-xs text-neutral-500 uppercase tracking-wider">
+            <div className="text-xs font-mono text-[var(--theme-color)]/70 uppercase tracking-wider">
               {status.logs.length} EVENTS RECORDED
             </div>
           </div>
@@ -748,35 +398,33 @@ export default function App() {
           <div className="flex-1 overflow-y-auto pr-4 space-y-3 custom-scrollbar">
             <AnimatePresence initial={false}>
               {status.logs.length === 0 ? (
-                <div className="h-full flex flex-col items-center justify-center text-neutral-600">
+                <div className="h-full flex flex-col items-center justify-center text-[var(--theme-color)]/50">
                   <ImageIcon size={48} strokeWidth={1.5} className="mb-4 opacity-50" />
-                  <p className="text-sm uppercase tracking-widest opacity-70">AWAITING DATA INPUT...</p>
+                  <p className="text-sm font-display uppercase tracking-[0.3em] opacity-70">AWAITING DATA INPUT...</p>
                 </div>
               ) : (
                 status.logs.map((log) => (
                   <motion.div
                     key={log.id}
-                    initial={{ opacity: 0, y: 10 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    className="bg-neutral-900 rounded-xl p-4 border border-neutral-800 flex items-start gap-4"
+                    initial={{ opacity: 0, x: -10 }}
+                    animate={{ opacity: 1, x: 0 }}
+                    className="bg-black/60 p-4 border-l-2 border-[var(--theme-color)] flex items-start gap-4 font-mono"
                   >
                     <div className={`mt-0.5 ${
-                      log.type === 'error' ? 'text-red-400' : 
-                      log.type === 'success' ? 'text-emerald-400' : 
-                      'text-neutral-400'
+                      log.type === 'error' ? 'text-[#ff003c]' : 'text-[var(--theme-color)]'
                     }`}>
                       {log.type === 'error' ? <AlertCircle size={18} /> : 
                        log.type === 'success' ? <CheckCircle2 size={18} /> : 
-                       <ImageIcon size={18} />}
+                       <span className="text-[var(--theme-color)] font-bold">{'>'}</span>}
                     </div>
                     <div className="flex-1">
-                      <p className="text-sm text-neutral-300 leading-relaxed">{log.message}</p>
+                      <p className={`text-sm ${log.type === 'error' ? 'text-[#ff003c]' : 'text-[var(--theme-color)]/90'} leading-relaxed`}>{log.message}</p>
                       <div className="flex items-center gap-3 mt-2">
-                        <span className="text-xs text-neutral-500 uppercase">
+                        <span className="text-xs text-[var(--theme-color)]/50 uppercase">
                           {new Date(log.timestamp).toLocaleTimeString()}
                         </span>
-                        <span className="text-xs text-neutral-600 uppercase tracking-wider">
-                          {log.type}
+                        <span className={`text-xs uppercase tracking-wider ${log.type === 'error' ? 'text-[#ff003c]/70' : 'text-[var(--theme-color)]/50'}`}>
+                          // {log.type}
                         </span>
                       </div>
                     </div>
@@ -790,19 +438,20 @@ export default function App() {
 
       <style>{`
         .custom-scrollbar::-webkit-scrollbar {
-          width: 6px;
+          width: 4px;
         }
         .custom-scrollbar::-webkit-scrollbar-track {
-          background: transparent;
+          background: rgba(0,0,0,0.5);
+          border-left: 1px solid color-mix(in srgb, var(--theme-color) 20%, transparent);
         }
         .custom-scrollbar::-webkit-scrollbar-thumb {
-          background: #262626;
-          border-radius: 10px;
+          background: var(--theme-color);
         }
         .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-          background: #404040;
+          background: color-mix(in srgb, var(--theme-color) 80%, white);
         }
       `}</style>
+      </div>
     </div>
   );
 }

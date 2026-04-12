@@ -18,8 +18,6 @@ app.use(express.json());
 
 let COMFYUI_URL = process.env.COMFYUI_URL || "http://localhost:8188";
 let WATCH_FOLDER = path.resolve(process.env.WATCH_FOLDER || "./input_images");
-let SEND_FOLDERS: { path: string, filter: string }[] = Array.from({ length: 10 }, () => ({ path: "", filter: "" }));
-let OUTPUT_FOLDERS: { id: string, path: string, sources: boolean[] }[] = [];
 
 // Ensure initial folders exist
 if (!fs.existsSync(WATCH_FOLDER)) fs.mkdirSync(WATCH_FOLDER, { recursive: true });
@@ -117,9 +115,6 @@ async function upscaleImage(filePath: string) {
 
 let watcher: any = null;
 
-let LM_URL = process.env.LM_URL || "http://127.0.0.1:1234";
-let LM_MODEL = process.env.LM_MODEL || "";
-
 function startWatcher() {
   if (watcher) watcher.close();
   
@@ -174,11 +169,7 @@ app.get("/api/status", async (req, res) => {
     currentScale,
     comfyUrl: COMFYUI_URL,
     watchFolder: WATCH_FOLDER,
-    sendFolders: SEND_FOLDERS,
-    outputFolders: OUTPUT_FOLDERS,
     isTeamModeEnabled,
-    lmUrl: LM_URL,
-    lmModel: LM_MODEL,
     logs,
     isConnected
   });
@@ -207,86 +198,12 @@ app.get("/api/test-connection", async (req, res) => {
   }
 });
 
-app.get("/api/run-ai-prepare", async (req, res) => {
-  const jobs: any[] = [];
-  
-  for (let i = 0; i < SEND_FOLDERS.length; i++) {
-    const folder = SEND_FOLDERS[i];
-    if (!folder.path || !fs.existsSync(folder.path)) continue;
-
-    try {
-      const files = fs.readdirSync(folder.path);
-      for (const file of files) {
-        if (folder.filter && file !== folder.filter) continue;
-        
-        const filePath = path.join(folder.path, file);
-        const stat = fs.statSync(filePath);
-        if (!stat.isFile()) continue;
-
-        const ext = path.extname(file).toLowerCase();
-        if (!['.txt', '.md', '.json', '.csv', '.log'].includes(ext)) {
-          continue;
-        }
-
-        const content = fs.readFileSync(filePath, 'utf-8');
-        
-        const targets = OUTPUT_FOLDERS.filter(out => out.sources[i] && out.path).map(out => out.path);
-        if (targets.length > 0) {
-          jobs.push({
-            sourceIndex: i,
-            fileName: file,
-            content: content,
-            mtime: stat.mtime.toISOString(),
-            mtimeMs: stat.mtimeMs,
-            targets: targets
-          });
-        }
-      }
-    } catch (err: any) {
-      addLog(`Error reading folder ${i + 1}: ${err.message}`, "error");
-    }
-  }
-  
-  res.json({ success: true, jobs });
-});
-
-app.post("/api/save-ai-output", (req, res) => {
-  const { fileName, content, targets } = req.body;
-  
-  if (!targets || targets.length === 0) {
-    return res.status(400).json({ success: false, error: "No targets provided" });
-  }
-
-  try {
-    for (const target of targets) {
-      const targetDir = path.resolve(target);
-      if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
-      
-      const outPath = path.join(targetDir, `AI_${fileName}`);
-      fs.writeFileSync(outPath, content, 'utf-8');
-      addLog(`Saved AI output to ${target}/AI_${fileName}`, "success");
-    }
-    res.json({ success: true });
-  } catch (err: any) {
-    addLog(`Error saving AI output: ${err.message}`, "error");
-    res.status(500).json({ success: false, error: err.message });
-  }
-});
-
-app.post("/api/log", (req, res) => {
-  const { message, type } = req.body;
-  addLog(message, type || "info");
-  res.json({ success: true });
-});
-
 app.post("/api/settings", (req, res) => {
-  const { scale, watching, comfyUrl, watchFolder, sendFolders, outputFolders, isTeamModeEnabled: teamMode, lmUrl, lmModel } = req.body;
+  const { scale, watching, comfyUrl, watchFolder, isTeamModeEnabled: teamMode } = req.body;
   
   if (scale !== undefined) currentScale = scale;
   if (comfyUrl !== undefined) COMFYUI_URL = comfyUrl;
   if (teamMode !== undefined) isTeamModeEnabled = teamMode;
-  if (lmUrl !== undefined) LM_URL = lmUrl;
-  if (lmModel !== undefined) LM_MODEL = lmModel;
 
   if (watchFolder !== undefined) {
     const newPath = path.resolve(watchFolder);
@@ -296,27 +213,6 @@ app.post("/api/settings", (req, res) => {
     }
   }
 
-  if (sendFolders !== undefined) {
-    SEND_FOLDERS = sendFolders;
-    SEND_FOLDERS.forEach(f => {
-      if (f && f.path) {
-        const p = path.resolve(f.path);
-        if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
-      }
-    });
-  }
-
-  if (outputFolders !== undefined) {
-    OUTPUT_FOLDERS = outputFolders;
-    OUTPUT_FOLDERS.forEach(out => {
-      if (out.path) {
-        const p = path.resolve(out.path);
-        if (!fs.existsSync(p)) fs.mkdirSync(p, { recursive: true });
-      }
-    });
-    // Output folders change might affect routing logic, but watchers stay the same
-  }
-  
   if (watching === true && !isWatching) {
     startWatcher();
   } else if (watching === false && isWatching) {
@@ -329,8 +225,6 @@ app.post("/api/settings", (req, res) => {
     isWatching, 
     comfyUrl: COMFYUI_URL,
     watchFolder: WATCH_FOLDER,
-    sendFolders: SEND_FOLDERS,
-    outputFolders: OUTPUT_FOLDERS,
     isTeamModeEnabled
   });
 });
