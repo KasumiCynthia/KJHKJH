@@ -43,7 +43,20 @@ async function upscaleImage(filePath: string) {
   }
 
   const fileName = path.basename(filePath);
-  addLog(`New image detected: ${fileName}. Starting upscale...`, "info");
+  let fileDate = "";
+  let fileTime = "";
+  try {
+    const fileStat = fs.statSync(filePath);
+    fileDate = fileStat.mtime.toLocaleDateString();
+    fileTime = fileStat.mtime.toLocaleTimeString();
+  } catch (e) {
+    // Fallback if stat fails
+    const now = new Date();
+    fileDate = now.toLocaleDateString();
+    fileTime = now.toLocaleTimeString();
+  }
+  
+  addLog(`New image detected: ${fileName} | Type: ${ext.toUpperCase()} | Date: ${fileDate} ${fileTime}. Starting upscale...`, "info");
 
   try {
     // 1. Upload image to ComfyUI
